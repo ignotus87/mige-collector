@@ -1,9 +1,34 @@
-﻿// See https://aka.ms/new-console-template for more information
-
-using HtmlAgilityPack;
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using mige_collector;
-using System.Xml;
+using mige_collector.DAL;
 
-SpeciesListCollector collector = new();
-collector.Collect();
+class Program
+{
+    public static IConfigurationRoot? Configuration { get; private set; }
 
+    static void Main(string[] args)
+    {
+        Configuration = new ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile("appsettings.json").Build();
+
+        var host = CreateDefaultBuilder().Build();
+
+        host.Services.GetRequiredService<Startup>().DoWork();
+    }
+
+    static IHostBuilder CreateDefaultBuilder()
+    {
+        return Host.CreateDefaultBuilder().ConfigureServices(services =>
+        {
+            services.AddSingleton<Startup>();
+            services.AddDbContext<MigeContext>(options =>
+            {
+                options.UseSqlServer(Configuration?.GetConnectionString("MigeContext") ?? "");
+            });
+        });
+    }
+}

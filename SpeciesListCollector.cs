@@ -1,4 +1,5 @@
 ﻿using HtmlAgilityPack;
+using mige_collector.DAL;
 
 namespace mige_collector
 {
@@ -7,17 +8,29 @@ namespace mige_collector
         public const string BaseUrl = "http://miskolcigombasz.hu";
         public const string SpeciesListUrl = "http://miskolcigombasz.hu/fajlistank.php";
 
+        private MigeContext migeContext;
+
         private string Text { get; set; } = "";
         public List<Species> Species { get; private set; } = new List<Species>();
 
-        public SpeciesListCollector()
+        public SpeciesListCollector(MigeContext migeContext)
         {
+            this.migeContext = migeContext;
         }
 
         public void Collect()
         {
+            CleanTable();
             CrawlSpeciesListPage();
             ParseSpeciesList();
+            //SaveSpeciesList();
+        }
+
+        private void CleanTable()
+        {
+            migeContext.Images.RemoveRange(migeContext.Images);
+            migeContext.Species.RemoveRange(migeContext.Species);
+            migeContext.SaveChanges();
         }
 
         private void CrawlSpeciesListPage()
@@ -41,13 +54,14 @@ namespace mige_collector
 
             foreach (HtmlNode kindTable in kindTables)
             {
-                foreach (HtmlNode tableRow in kindTable.SelectNodes("//tr"))
+                foreach (HtmlNode tableRow in kindTable.ChildNodes.Where(x => x.Name == "tr").Where(x => x != null))
                 {
                     if (tableRow.HasClass("Header")) { continue; }
                     if (!tableRow.HasClass("Odd") && !tableRow.HasClass("Even")) { continue; }
 
                     var a = tableRow.ChildNodes[0].ChildNodes[0];
                     if (a.HasAttributes && a.Attributes.Any(x => x.Name == "id" && x.Value == "goHome")) { continue; }
+                    if (!a.HasAttributes) { continue; } // no link, just text
 
                     Species species = new();
 
@@ -58,12 +72,30 @@ namespace mige_collector
                     species.OldNameLatin = tableRow.ChildNodes[6].InnerHtml;
 
                     FillSpeciesInfo(species);
+
+                    if (migeContext.Species?.Any(x => x.NameHU == species.NameHU) ?? false)
+                    {
+                        Console.WriteLine("Duplicate!");
+                    }
+
+                    migeContext.Species?.Add(species);
+                    migeContext.SaveChanges();
+
+                    foreach (var image in species.SpeciesImages)
+                    {
+                        image.SpeciesID = species.ID;
+                    }
+
+                    migeContext.Images?.AddRange(species.SpeciesImages);
+                    migeContext.SaveChanges();
                 }
             }
         }
 
         private void FillSpeciesInfo(Species species)
         {
+            Console.WriteLine(species.NameHU);
+
             string pageText = "";
 
             using (HttpClient client = new HttpClient())
@@ -80,46 +112,176 @@ namespace mige_collector
             HtmlDocument html = new HtmlDocument();
             html.LoadHtml(pageText);
 
-            var kindIconPImg = html.DocumentNode.SelectSingleNode("//p[@class='KindIcon']/span");
-            species.EdibilityShortText = kindIconPImg.InnerText;
+            string lastProperty = "";
+
+            var kindIconsImg = html.DocumentNode.SelectNodes("//p[@class='KindIcon']/span");
+            if (kindIconsImg is not null)
+            {
+                foreach (var kindIconImg in kindIconsImg)
+                    if (kindIconsImg is not null)
+                    {
+                        species.EdibilityShortText += kindIconImg.InnerText;
+                        lastProperty = nameof(species.EdibilityShortText);
+                    }
+            }
 
             foreach (var p in html.DocumentNode.SelectNodes("//p"))
             {
-                if (p.InnerText.Contains("Kalap:"))
+                string trimmedText = p.InnerText.Trim();
+                if (trimmedText == "") { continue; }
+
+                if (trimmedText.Contains("Kalap:") || trimmedText.Trim().StartsWith("A kucsma") ||
+                    trimmedText.StartsWith("Feji rész:"))
                 {
-                    species.CapText = p.InnerText;
+                    species.CapText = trimmedText;
+                    lastProperty = nameof(species.CapText);
                 }
-                else if (p.InnerText.Contains("Lemezek:"))
+                else if (trimmedText.Contains("Termőtest párna (sztróma):", StringComparison.InvariantCultureIgnoreCase) || 
+                    trimmedText.Contains("Termőtest:") || trimmedText.Contains("Termőtest-párna (sztróma):") ||
+                    trimmedText.StartsWith("A termőtest") || 
+                    trimmedText.Replace(" ", "").Replace("(", "").Replace("-", "").Replace(")", "").Contains("Sztrómatermőtestpárna:"))
                 {
-                    species.GillsText = p.InnerText;
+                    if (species.StromaText != "") { species.StromaText += Environment.NewLine; }
+                    species.StromaText = trimmedText;
+                    lastProperty = nameof(species.StromaText);
                 }
-                else if (p.InnerText.Contains("Tönk:"))
+                else if (trimmedText.Contains("Mikroszkopikus bélyegek:"))
                 {
-                    species.StalkText = p.InnerText;
+                    species.MicroscopicText = trimmedText;
+                    lastProperty = nameof(species.MicroscopicText);
                 }
-                else if (p.InnerText.Contains("Hús:"))
+                else if (trimmedText.Contains("Gleba:"))
                 {
-                    species.FleshText = p.InnerText;
+                    species.GlebaText = trimmedText;
+                    lastProperty = nameof(species.GlebaText);
                 }
-                else if (p.InnerText.Contains("Előfordulás:"))
+                else if (trimmedText.Contains("Spórák:") || trimmedText.Contains("Spóra:") ||
+                    trimmedText.Contains("Spórapor:"))
                 {
-                    species.PresenceText = p.InnerText;
+                    species.SporesText = trimmedText;
+                    lastProperty = nameof(species.SporesText);
                 }
-                else if (p.InnerText.Contains("Étkezési érték:"))
+                else if (trimmedText.Contains("Lemezek:") || trimmedText.Contains("Tráma, termőréteg:") ||
+                    trimmedText.TrimStart().StartsWith("Termőréteg:"))
                 {
-                    species.EdibilityText = p.InnerText;
+                    species.GillsText = trimmedText;
+                    lastProperty = nameof(species.GillsText);
                 }
-                else if (p.InnerText.Contains("Forrás:"))
+                else if (trimmedText.Contains("Tönk:") || trimmedText.TrimStart().StartsWith("A tönk") ||
+                    trimmedText.TrimStart().StartsWith("Nyélrész:"))
                 {
-                    species.SourceText = p.InnerText;
+                    species.StalkText = trimmedText;
+                    lastProperty = nameof(species.StalkText);
+                }
+                else if (trimmedText.Contains("Hús:"))
+                {
+                    species.FleshText = trimmedText;
+                    lastProperty = nameof(species.FleshText);
+                }
+                else if (trimmedText.Contains("Előfordulás:") || trimmedText.Contains("Élőhely:") ||
+                    trimmedText.Contains("Termőhely és idő:") || trimmedText.Contains("Termőhely:"))
+                {
+                    species.PresenceText = trimmedText;
+                    lastProperty = nameof(species.PresenceText);
+                }
+                else if (trimmedText.Contains("Étkezési érték:"))
+                {
+                    species.EdibilityText = trimmedText;
+                    lastProperty = nameof(species.EdibilityText);
+                }
+                else if (trimmedText.Contains("Veszélyeztetettség"))
+                {
+                    species.EndangermentText = trimmedText;
+                    lastProperty = nameof(species.EndangermentText);
+                }
+                else if (trimmedText.Contains("Természetvédelmi értéke:"))
+                {
+                    species.ProtectionValueText = trimmedText;
+                    lastProperty = nameof(species.ProtectionValueText);
+                }
+                else if (trimmedText.Contains("Hasonló fajok:"))
+                {
+                    species.SimilarSpeciesText = trimmedText;
+                    lastProperty = nameof(species.SimilarSpeciesText);
+                }
+                else if (trimmedText.Contains("Forrás:"))
+                {
+                    species.SourceText = trimmedText;
+                    lastProperty = nameof(species.SourceText);
+                }
+                else if (trimmedText.Contains("Megjegyzés:") || trimmedText.Contains("Elkülönítő bélyegei:") ||
+                    trimmedText.StartsWith("Hasonló fajok:"))
+                {
+                    if (species.CommentText != "") { species.CommentText += Environment.NewLine; }
+                    species.CommentText += trimmedText;
+                    lastProperty = nameof(species.CommentText);
+                }
+                else if (trimmedText.Contains("A termőtest"))
+                {
+                    if (species.StromaText != "") { species.StromaText += Environment.NewLine; }
+                    species.StromaText = trimmedText;
+                    lastProperty = nameof(species.StromaText);
+                }
+                else if (trimmedText.Contains("Syn."))
+                {
+                    // don't care
+                }
+                else if (!string.IsNullOrEmpty(lastProperty) && trimmedText.Trim() != "")
+                {
+                    // add it as new line to last edited field
+                    string currentValue = species.GetType().GetProperty(lastProperty).GetValue(species) as string ?? "";
+                    if (currentValue.Contains(trimmedText.Trim())) { continue; }
+
+                    if (currentValue != "") { currentValue += Environment.NewLine; }
+                    currentValue += trimmedText;
+
+                    species.GetType().GetProperty(lastProperty)?.SetValue(species, currentValue);
+                }
+                else if (string.IsNullOrEmpty(lastProperty) && trimmedText.Trim() != "" && trimmedText.Trim() != "Vissza a fajlistához")
+                {
+                    Console.WriteLine("Dont know where to put this");
                 }
             }
 
-            foreach (var img in html.DocumentNode.SelectNodes("//div[@class='BT']/div/div/img"))
+            // Validity check
+            if (species.CapText+species.StromaText == "")
             {
-                species.SpeciesImages.Add(new SpeciesImage() { Url = BaseUrl + img.Attributes.FirstOrDefault(x => x.Name == "src")?.Value ?? "" });
+                if (species.EdibilityShortText.Contains(Environment.NewLine))
+                {
+                    var splitted = species.EdibilityShortText.Split(Environment.NewLine);
+                    species.StromaText = splitted[splitted.Length - 1];
+                    species.EdibilityShortText = string.Join(Environment.NewLine, splitted.Where((x, i) => i > 0 && i < splitted.Length - 1).ToList());
+                }
+                else if (species.NameHU.Equals("Gyengeillatú pókhálósgomba*") ||
+                    species.NameHU.Equals("Kerek ráspolygomba"))
+                {
+                    // There's no valid info for these
+                }
+                else 
+                {
+                    Console.WriteLine("Both CapText and StromaText is missing");
+                }
+            }
+            else if (species.CapText != "" && species.GillsText == "")
+            {
+                Console.WriteLine("CapText exists but GillsText is missing");
             }
 
+            var imgNodes = html.DocumentNode.SelectNodes("//div[@class='BT']/div/div/img");
+            if (imgNodes is not null)
+            {
+                foreach (var img in html.DocumentNode.SelectNodes("//div[@class='BT']/div/div/img"))
+                {
+                    species.SpeciesImages.Add(new SpeciesImage() { Url = BaseUrl + img.Attributes.FirstOrDefault(x => x.Name == "src")?.Value ?? "" });
+                }
+            }
         }
+
+        private void SaveSpeciesList()
+        {
+            migeContext.Species?.AddRange(Species);
+            migeContext.SaveChanges();
+        }
+
     }
 }
