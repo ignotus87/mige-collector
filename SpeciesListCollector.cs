@@ -20,17 +20,8 @@ namespace mige_collector
 
         public void Collect()
         {
-            CleanTable();
             CrawlSpeciesListPage();
             ParseSpeciesList();
-            //SaveSpeciesList();
-        }
-
-        private void CleanTable()
-        {
-            migeContext.Images.RemoveRange(migeContext.Images);
-            migeContext.Species.RemoveRange(migeContext.Species);
-            migeContext.SaveChanges();
         }
 
         private void CrawlSpeciesListPage()
@@ -63,7 +54,28 @@ namespace mige_collector
                     if (a.HasAttributes && a.Attributes.Any(x => x.Name == "id" && x.Value == "goHome")) { continue; }
                     if (!a.HasAttributes) { continue; } // no link, just text
 
-                    Species species = new();
+                    Species species;
+
+                    string stringMigeID = a.Attributes["id"].Value.Replace("kLI", "");
+                    int parsedMigeID;
+                    if (int.TryParse(stringMigeID, out parsedMigeID))
+                    {
+                        var foundSpecies = migeContext.Species?.FirstOrDefault(x => x.MigeID == parsedMigeID);
+                        if (foundSpecies is null)
+                        {
+                            species = new();
+                            species.MigeID = parsedMigeID;
+                        }
+                        else
+                        {
+                            species = foundSpecies;
+                            species.SpeciesImages = migeContext.Images?.Where(x => x.SpeciesID == species.ID)?.ToList() ?? new();
+                        }
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException("Could not parse mushroom MigeID: " + stringMigeID);
+                    }                    
 
                     species.Url = BaseUrl + a.Attributes["href"].Value;
                     species.NameHU = a.InnerHtml;
@@ -73,20 +85,22 @@ namespace mige_collector
 
                     FillSpeciesInfo(species);
 
-                    if (migeContext.Species?.Any(x => x.NameHU == species.NameHU) ?? false)
+                    if (migeContext.Species?.Find(species.ID) is null)
                     {
-                        Console.WriteLine("Duplicate!");
+                        migeContext.Species?.Add(species);
                     }
 
-                    migeContext.Species?.Add(species);
                     migeContext.SaveChanges();
 
                     foreach (var image in species.SpeciesImages)
                     {
                         image.SpeciesID = species.ID;
+                        if (!migeContext.Images?.Any(x => x.Url == image.Url && x.SpeciesID == species.ID) ?? false)
+                        {
+                            migeContext.Images?.Add(image);
+                        }
                     }
-
-                    migeContext.Images?.AddRange(species.SpeciesImages);
+                    
                     migeContext.SaveChanges();
                 }
             }
@@ -120,7 +134,19 @@ namespace mige_collector
                 foreach (var kindIconImg in kindIconsImg)
                     if (kindIconsImg is not null)
                     {
-                        species.EdibilityShortText += kindIconImg.InnerText;
+                        string edibilityTextCandidate = kindIconImg.InnerText;
+                        if (species.EdibilityShortText.Contains(edibilityTextCandidate)) { continue; }
+
+
+                        if (!edibilityTextCandidate.Contains("ehető", StringComparison.CurrentCultureIgnoreCase) && !edibilityTextCandidate.Contains("mérgező", StringComparison.CurrentCultureIgnoreCase) &&
+                            !edibilityTextCandidate.Contains("védett", StringComparison.CurrentCultureIgnoreCase) && !edibilityTextCandidate.Contains("fogyasztható", StringComparison.CurrentCultureIgnoreCase))
+                        {
+                            // todo should check edibility info only at the end
+                            Console.WriteLine("Edibility info missing, this piece of text should be assigned to another property.");
+                        }
+
+                        if (species.EdibilityShortText != "") { species.EdibilityShortText += Environment.NewLine; }
+                        species.EdibilityShortText += edibilityTextCandidate;
                         lastProperty = nameof(species.EdibilityShortText);
                     }
             }
@@ -272,15 +298,14 @@ namespace mige_collector
             {
                 foreach (var img in html.DocumentNode.SelectNodes("//div[@class='BT']/div/div/img"))
                 {
-                    species.SpeciesImages.Add(new SpeciesImage() { Url = BaseUrl + img.Attributes.FirstOrDefault(x => x.Name == "src")?.Value ?? "" });
+                    string url = BaseUrl + img.Attributes.FirstOrDefault(x => x.Name == "src")?.Value ?? "";
+
+                    if (!species.SpeciesImages.Any(x => x.Url == url))
+                    {
+                        species.SpeciesImages.Add(new SpeciesImage() { Url = url });
+                    }
                 }
             }
-        }
-
-        private void SaveSpeciesList()
-        {
-            migeContext.Species?.AddRange(Species);
-            migeContext.SaveChanges();
         }
 
     }

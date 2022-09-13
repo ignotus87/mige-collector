@@ -3,6 +3,7 @@
     public class Species
     {
         public int ID { get; set; }
+        public int MigeID { get; set; }
         public string Url { get; set; } = "";
         public string NameHU { get; set; } = "";
         public string NameLatin { get; set; } = "";
