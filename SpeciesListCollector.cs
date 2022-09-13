@@ -1,5 +1,6 @@
 ﻿using HtmlAgilityPack;
 using mige_collector.DAL;
+using System.Text.Json;
 
 namespace mige_collector
 {
@@ -7,11 +8,15 @@ namespace mige_collector
     {
         public const string BaseUrl = "http://miskolcigombasz.hu";
         public const string SpeciesListUrl = "http://miskolcigombasz.hu/fajlistank.php";
+        public const string DataFolder = "c:\\tmp\\MigeData";
+        public const string SpeciesFolder = "Species";
+        public const string SpeciesImagesFolder = "SpeciesImages";
 
         private MigeContext migeContext;
 
         private string Text { get; set; } = "";
         public List<Species> Species { get; private set; } = new List<Species>();
+        private string LastUpdatedProperty = "";
 
         public SpeciesListCollector(MigeContext migeContext)
         {
@@ -20,8 +25,15 @@ namespace mige_collector
 
         public void Collect()
         {
+            EnsureDataFoldersExist();
             CrawlSpeciesListPage();
             ParseSpeciesList();
+        }
+
+        private void EnsureDataFoldersExist()
+        {
+            Directory.CreateDirectory(Path.Combine(DataFolder, SpeciesFolder));
+            Directory.CreateDirectory(Path.Combine(DataFolder, SpeciesImagesFolder));
         }
 
         private void CrawlSpeciesListPage()
@@ -75,7 +87,7 @@ namespace mige_collector
                     else
                     {
                         throw new InvalidOperationException("Could not parse mushroom MigeID: " + stringMigeID);
-                    }                    
+                    }
 
                     species.Url = BaseUrl + a.Attributes["href"].Value;
                     species.NameHU = a.InnerHtml;
@@ -84,37 +96,62 @@ namespace mige_collector
                     species.OldNameLatin = tableRow.ChildNodes[6].InnerHtml;
 
                     FillSpeciesInfo(species);
-
-                    if (migeContext.Species?.Find(species.ID) is null)
-                    {
-                        migeContext.Species?.Add(species);
-                    }
-
-                    migeContext.SaveChanges();
-
-                    foreach (var image in species.SpeciesImages)
-                    {
-                        image.SpeciesID = species.ID;
-                        if (!migeContext.Images?.Any(x => x.Url == image.Url && x.SpeciesID == species.ID) ?? false)
-                        {
-                            migeContext.Images?.Add(image);
-                        }
-                    }
-                    
-                    migeContext.SaveChanges();
+                    SaveSpecies(species);
                 }
             }
         }
 
-        private void FillSpeciesInfo(Species species)
+        private void SaveSpecies(Species species)
         {
-            Console.WriteLine(species.NameHU);
+            SaveToDatabase(species);
+            SaveToJson(species);
+        }
+
+        private void SaveToJson(Species species)
+        {
+            string fileName = Path.Combine(DataFolder, SpeciesFolder, $"{species.ID}.json");
+            string jsonString = JsonSerializer.Serialize(species);
+            File.WriteAllText(fileName, jsonString);
+
+            foreach (var image in species.SpeciesImages)
+            {
+                fileName = Path.Combine(DataFolder, SpeciesImagesFolder, $"{image.ID}.json");
+                jsonString = JsonSerializer.Serialize(image);
+                File.WriteAllText(fileName, jsonString);
+            }
+        }
+
+        private void SaveToDatabase(Species species)
+        {
+            if (migeContext.Species?.Find(species.ID) is null)
+            {
+                migeContext.Species?.Add(species);
+            }
+
+            migeContext.SaveChanges();
+
+            foreach (var image in species.SpeciesImages)
+            {
+                image.SpeciesID = species.ID;
+                if (!migeContext.Images?.Any(x => x.Url == image.Url && x.SpeciesID == species.ID) ?? false)
+                {
+                    migeContext.Images?.Add(image);
+                }
+            }
+
+            migeContext.SaveChanges();
+        }
+
+        private void FillSpeciesInfo(Species existingSpecies)
+        {
+            Console.WriteLine(existingSpecies.NameHU);
+            var actualSpecies = new Species();
 
             string pageText = "";
 
             using (HttpClient client = new HttpClient())
             {
-                var result = client.GetAsync(species.Url).GetAwaiter().GetResult();
+                var result = client.GetAsync(existingSpecies.Url).GetAwaiter().GetResult();
                 if (result is not null && result.Content is not null && result.StatusCode == System.Net.HttpStatusCode.OK)
                 {
                     pageText = result.Content.ReadAsStringAsync().Result;
@@ -126,7 +163,7 @@ namespace mige_collector
             HtmlDocument html = new HtmlDocument();
             html.LoadHtml(pageText);
 
-            string lastProperty = "";
+            LastUpdatedProperty = "";
 
             var kindIconsImg = html.DocumentNode.SelectNodes("//p[@class='KindIcon']/span");
             if (kindIconsImg is not null)
@@ -135,7 +172,7 @@ namespace mige_collector
                     if (kindIconsImg is not null)
                     {
                         string edibilityTextCandidate = kindIconImg.InnerText;
-                        if (species.EdibilityShortText.Contains(edibilityTextCandidate)) { continue; }
+                        if (actualSpecies.EdibilityShortText.Contains(edibilityTextCandidate)) { continue; }
 
 
                         if (!edibilityTextCandidate.Contains("ehető", StringComparison.CurrentCultureIgnoreCase) && !edibilityTextCandidate.Contains("mérgező", StringComparison.CurrentCultureIgnoreCase) &&
@@ -145,9 +182,9 @@ namespace mige_collector
                             Console.WriteLine("Edibility info missing, this piece of text should be assigned to another property.");
                         }
 
-                        if (species.EdibilityShortText != "") { species.EdibilityShortText += Environment.NewLine; }
-                        species.EdibilityShortText += edibilityTextCandidate;
-                        lastProperty = nameof(species.EdibilityShortText);
+                        if (actualSpecies.EdibilityShortText != "") { actualSpecies.EdibilityShortText += Environment.NewLine; }
+                        actualSpecies.EdibilityShortText += edibilityTextCandidate;
+                        LastUpdatedProperty = nameof(actualSpecies.EdibilityShortText);
                     }
             }
 
@@ -159,127 +196,127 @@ namespace mige_collector
                 if (trimmedText.Contains("Kalap:") || trimmedText.Trim().StartsWith("A kucsma") ||
                     trimmedText.StartsWith("Feji rész:"))
                 {
-                    species.CapText = trimmedText;
-                    lastProperty = nameof(species.CapText);
+                    actualSpecies.CapText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.CapText);
                 }
                 else if (trimmedText.Contains("Termőtest párna (sztróma):", StringComparison.InvariantCultureIgnoreCase) || 
                     trimmedText.Contains("Termőtest:") || trimmedText.Contains("Termőtest-párna (sztróma):") ||
                     trimmedText.StartsWith("A termőtest") || 
                     trimmedText.Replace(" ", "").Replace("(", "").Replace("-", "").Replace(")", "").Contains("Sztrómatermőtestpárna:"))
                 {
-                    if (species.StromaText != "") { species.StromaText += Environment.NewLine; }
-                    species.StromaText = trimmedText;
-                    lastProperty = nameof(species.StromaText);
+                    if (actualSpecies.StromaText != "") { actualSpecies.StromaText += Environment.NewLine; }
+                    actualSpecies.StromaText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.StromaText);
                 }
                 else if (trimmedText.Contains("Mikroszkopikus bélyegek:"))
                 {
-                    species.MicroscopicText = trimmedText;
-                    lastProperty = nameof(species.MicroscopicText);
+                    actualSpecies.MicroscopicText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.MicroscopicText);
                 }
                 else if (trimmedText.Contains("Gleba:"))
                 {
-                    species.GlebaText = trimmedText;
-                    lastProperty = nameof(species.GlebaText);
+                    actualSpecies.GlebaText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.GlebaText);
                 }
                 else if (trimmedText.Contains("Spórák:") || trimmedText.Contains("Spóra:") ||
                     trimmedText.Contains("Spórapor:"))
                 {
-                    species.SporesText = trimmedText;
-                    lastProperty = nameof(species.SporesText);
+                    actualSpecies.SporesText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.SporesText);
                 }
                 else if (trimmedText.Contains("Lemezek:") || trimmedText.Contains("Tráma, termőréteg:") ||
                     trimmedText.TrimStart().StartsWith("Termőréteg:"))
                 {
-                    species.GillsText = trimmedText;
-                    lastProperty = nameof(species.GillsText);
+                    actualSpecies.GillsText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.GillsText);
                 }
                 else if (trimmedText.Contains("Tönk:") || trimmedText.TrimStart().StartsWith("A tönk") ||
                     trimmedText.TrimStart().StartsWith("Nyélrész:"))
                 {
-                    species.StalkText = trimmedText;
-                    lastProperty = nameof(species.StalkText);
+                    actualSpecies.StalkText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.StalkText);
                 }
                 else if (trimmedText.Contains("Hús:"))
                 {
-                    species.FleshText = trimmedText;
-                    lastProperty = nameof(species.FleshText);
+                    actualSpecies.FleshText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.FleshText);
                 }
                 else if (trimmedText.Contains("Előfordulás:") || trimmedText.Contains("Élőhely:") ||
                     trimmedText.Contains("Termőhely és idő:") || trimmedText.Contains("Termőhely:"))
                 {
-                    species.PresenceText = trimmedText;
-                    lastProperty = nameof(species.PresenceText);
+                    actualSpecies.PresenceText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.PresenceText);
                 }
                 else if (trimmedText.Contains("Étkezési érték:"))
                 {
-                    species.EdibilityText = trimmedText;
-                    lastProperty = nameof(species.EdibilityText);
+                    actualSpecies.EdibilityText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.EdibilityText);
                 }
                 else if (trimmedText.Contains("Veszélyeztetettség"))
                 {
-                    species.EndangermentText = trimmedText;
-                    lastProperty = nameof(species.EndangermentText);
+                    actualSpecies.EndangermentText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.EndangermentText);
                 }
                 else if (trimmedText.Contains("Természetvédelmi értéke:"))
                 {
-                    species.ProtectionValueText = trimmedText;
-                    lastProperty = nameof(species.ProtectionValueText);
+                    actualSpecies.ProtectionValueText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.ProtectionValueText);
                 }
                 else if (trimmedText.Contains("Hasonló fajok:"))
                 {
-                    species.SimilarSpeciesText = trimmedText;
-                    lastProperty = nameof(species.SimilarSpeciesText);
+                    actualSpecies.SimilarSpeciesText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.SimilarSpeciesText);
                 }
                 else if (trimmedText.Contains("Forrás:"))
                 {
-                    species.SourceText = trimmedText;
-                    lastProperty = nameof(species.SourceText);
+                    actualSpecies.SourceText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.SourceText);
                 }
                 else if (trimmedText.Contains("Megjegyzés:") || trimmedText.Contains("Elkülönítő bélyegei:") ||
                     trimmedText.StartsWith("Hasonló fajok:"))
                 {
-                    if (species.CommentText != "") { species.CommentText += Environment.NewLine; }
-                    species.CommentText += trimmedText;
-                    lastProperty = nameof(species.CommentText);
+                    if (actualSpecies.CommentText != "") { actualSpecies.CommentText += Environment.NewLine; }
+                    actualSpecies.CommentText += trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.CommentText);
                 }
                 else if (trimmedText.Contains("A termőtest"))
                 {
-                    if (species.StromaText != "") { species.StromaText += Environment.NewLine; }
-                    species.StromaText = trimmedText;
-                    lastProperty = nameof(species.StromaText);
+                    if (actualSpecies.StromaText != "") { actualSpecies.StromaText += Environment.NewLine; }
+                    actualSpecies.StromaText = trimmedText;
+                    LastUpdatedProperty = nameof(actualSpecies.StromaText);
                 }
                 else if (trimmedText.Contains("Syn."))
                 {
                     // don't care
                 }
-                else if (!string.IsNullOrEmpty(lastProperty) && trimmedText.Trim() != "")
+                else if (!string.IsNullOrEmpty(LastUpdatedProperty) && trimmedText.Trim() != "")
                 {
                     // add it as new line to last edited field
-                    string currentValue = species.GetType().GetProperty(lastProperty).GetValue(species) as string ?? "";
+                    string currentValue = actualSpecies.GetType().GetProperty(LastUpdatedProperty).GetValue(actualSpecies) as string ?? "";
                     if (currentValue.Contains(trimmedText.Trim())) { continue; }
 
                     if (currentValue != "") { currentValue += Environment.NewLine; }
                     currentValue += trimmedText;
 
-                    species.GetType().GetProperty(lastProperty)?.SetValue(species, currentValue);
+                    actualSpecies.GetType().GetProperty(LastUpdatedProperty)?.SetValue(actualSpecies, currentValue);
                 }
-                else if (string.IsNullOrEmpty(lastProperty) && trimmedText.Trim() != "" && trimmedText.Trim() != "Vissza a fajlistához")
+                else if (string.IsNullOrEmpty(LastUpdatedProperty) && trimmedText.Trim() != "" && trimmedText.Trim() != "Vissza a fajlistához")
                 {
                     Console.WriteLine("Dont know where to put this");
                 }
             }
 
             // Validity check
-            if (species.CapText+species.StromaText == "")
+            if (actualSpecies.CapText+actualSpecies.StromaText == "")
             {
-                if (species.EdibilityShortText.Contains(Environment.NewLine))
+                if (actualSpecies.EdibilityShortText.Contains(Environment.NewLine))
                 {
-                    var splitted = species.EdibilityShortText.Split(Environment.NewLine);
-                    species.StromaText = splitted[splitted.Length - 1];
-                    species.EdibilityShortText = string.Join(Environment.NewLine, splitted.Where((x, i) => i > 0 && i < splitted.Length - 1).ToList());
+                    var splitted = actualSpecies.EdibilityShortText.Split(Environment.NewLine);
+                    actualSpecies.StromaText = splitted[splitted.Length - 1];
+                    actualSpecies.EdibilityShortText = string.Join(Environment.NewLine, splitted.Where((x, i) => i > 0 && i < splitted.Length - 1).ToList());
                 }
-                else if (species.NameHU.Equals("Gyengeillatú pókhálósgomba*") ||
-                    species.NameHU.Equals("Kerek ráspolygomba"))
+                else if (existingSpecies.NameHU.Equals("Gyengeillatú pókhálósgomba*") ||
+                    existingSpecies.NameHU.Equals("Kerek ráspolygomba"))
                 {
                     // There's no valid info for these
                 }
@@ -288,7 +325,7 @@ namespace mige_collector
                     Console.WriteLine("Both CapText and StromaText is missing");
                 }
             }
-            else if (species.CapText != "" && species.GillsText == "")
+            else if (actualSpecies.CapText != "" && actualSpecies.GillsText == "")
             {
                 Console.WriteLine("CapText exists but GillsText is missing");
             }
@@ -300,12 +337,15 @@ namespace mige_collector
                 {
                     string url = BaseUrl + img.Attributes.FirstOrDefault(x => x.Name == "src")?.Value ?? "";
 
-                    if (!species.SpeciesImages.Any(x => x.Url == url))
+                    if (!actualSpecies.SpeciesImages.Any(x => x.Url == url))
                     {
-                        species.SpeciesImages.Add(new SpeciesImage() { Url = url });
+                        actualSpecies.SpeciesImages.Add(new SpeciesImage() { Url = url });
                     }
                 }
             }
+
+            existingSpecies.CopyFrom(actualSpecies);
+
         }
 
     }

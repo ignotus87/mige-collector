@@ -9,6 +9,7 @@
         public string NameLatin { get; set; } = "";
         public string OldNameHU { get; set; } = "";
         public string OldNameLatin { get; set; } = "";
+
         public string EdibilityShortText { get; set; } = "";
         public string StromaText { get; set; } = "";
         public string GlebaText { get; set; } = "";
@@ -27,5 +28,27 @@
         public string CommentText { get; set; } = "";
 
         public List<SpeciesImage> SpeciesImages = new List<SpeciesImage>();
+
+        public void CopyFrom(Species other)
+        {
+            EdibilityShortText = other.EdibilityShortText;
+            StromaText = other.StromaText;
+            GlebaText = other.GlebaText;
+            SporesText = other.SporesText;
+            MicroscopicText = other.MicroscopicText;
+            CapText = other.CapText;
+            GillsText = other.GillsText;
+            StalkText = other.StalkText;
+            FleshText = other.FleshText;
+            PresenceText = other.PresenceText;
+            EndangermentText = other.EndangermentText;
+            ProtectionValueText = other.ProtectionValueText;
+            EdibilityText = other.EdibilityText;
+            SimilarSpeciesText = other.SimilarSpeciesText;
+            SourceText = other.SourceText;
+            CommentText = other.CommentText;
+
+            SpeciesImages = other.SpeciesImages;
+        }
     }
 }
