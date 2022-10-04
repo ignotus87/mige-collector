@@ -306,6 +306,11 @@ namespace mige_collector
                 }
             }
 
+            if (!(actualSpecies.FullText?.Equals(pageText, StringComparison.InvariantCultureIgnoreCase) ?? false))
+            {
+                actualSpecies.FullText = pageText;
+            }
+
             // Validity check
             if (actualSpecies.CapText+actualSpecies.StromaText == "")
             {

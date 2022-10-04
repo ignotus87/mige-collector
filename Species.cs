@@ -10,6 +10,7 @@
         public string OldNameHU { get; set; } = "";
         public string OldNameLatin { get; set; } = "";
 
+        public string FullText { get; set; }
         public string EdibilityShortText { get; set; } = "";
         public string StromaText { get; set; } = "";
         public string GlebaText { get; set; } = "";
@@ -31,6 +32,7 @@
 
         public void CopyFrom(Species other)
         {
+            FullText = other.FullText;
             EdibilityShortText = other.EdibilityShortText;
             StromaText = other.StromaText;
             GlebaText = other.GlebaText;
