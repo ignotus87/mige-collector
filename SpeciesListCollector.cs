@@ -6,6 +6,16 @@ namespace mige_collector
 {
     internal class SpeciesListCollector
     {
+        private enum Choices
+        {
+            LoadFullTextFromWebsite = 1,
+            ParseFullTextFromDatabase,
+            CreateOutputJsonFile,
+            Exit
+        }
+
+        private Choices RunMode { get; set; }
+
         public const string BaseUrl = "http://miskolcigombasz.hu";
         public const string SpeciesListUrl = "http://miskolcigombasz.hu/fajlistank.php";
         public const string DataFolder = "c:\\tmp\\MigeData";
@@ -25,9 +35,58 @@ namespace mige_collector
 
         public void Collect()
         {
-            EnsureDataFoldersExist();
-            CrawlSpeciesListPage();
-            ParseSpeciesList();
+            InputMode();
+
+            switch (RunMode)
+            {
+                case Choices.LoadFullTextFromWebsite:
+                    {
+                        CrawlSpeciesListPage();
+                        ParseAndSaveSpeciesListFromPage();
+                        break;
+                    }
+                case Choices.ParseFullTextFromDatabase:
+                    {
+                        ParseSpeciesListFromDatabase();
+                        break;
+                    }
+                case Choices.CreateOutputJsonFile:
+                    {
+                        EnsureDataFoldersExist();
+                        LoadSpeciesListFromDatabase();
+                        SaveSpeciesListToJson();
+                        break;
+                    }
+            }
+        }
+
+        private void LoadSpeciesListFromDatabase()
+        {
+            if (migeContext.Species is null) { return; }
+
+            Species = migeContext.Species.ToList();
+        }
+
+        private void InputMode()
+        {
+            Console.WriteLine($"--- Choose an option ---");
+            Console.WriteLine($"{(int)Choices.LoadFullTextFromWebsite} - {nameof(Choices.LoadFullTextFromWebsite)}");
+            Console.WriteLine($"{(int)Choices.ParseFullTextFromDatabase} - {nameof(Choices.ParseFullTextFromDatabase)}");
+            Console.WriteLine($"{(int)Choices.CreateOutputJsonFile} - {nameof(Choices.CreateOutputJsonFile)}");
+            Console.WriteLine($"{(int)Choices.Exit} - {nameof(Choices.Exit)}");
+
+            int parsed;
+
+            do
+            {
+                var consoleKeyInfo = Console.ReadKey();
+                _ = int.TryParse(consoleKeyInfo.KeyChar.ToString(), out parsed);
+            }
+            while (parsed != (int)Choices.LoadFullTextFromWebsite && parsed != (int)Choices.ParseFullTextFromDatabase && parsed != (int)Choices.CreateOutputJsonFile && parsed != (int)Choices.Exit);
+
+            RunMode = (Choices)parsed;
+
+            if (RunMode == Choices.Exit) { Environment.Exit(0); }
         }
 
         private void EnsureDataFoldersExist()
@@ -48,7 +107,7 @@ namespace mige_collector
             }
         }
 
-        private void ParseSpeciesList()
+        private void ParseAndSaveSpeciesListFromPage()
         {
             HtmlDocument html = new HtmlDocument();
             html.LoadHtml(Text);
@@ -95,19 +154,34 @@ namespace mige_collector
                     species.OldNameHU = tableRow.ChildNodes[4].InnerHtml;
                     species.OldNameLatin = tableRow.ChildNodes[6].InnerHtml;
 
-                    FillSpeciesInfo(species);
-                    SaveSpecies(species);
+                    if (!(species.FullText?.Equals(Text, StringComparison.InvariantCultureIgnoreCase) ?? false))
+                    {
+                        species.FullText = Text;
+                    }
+
+                    SaveSpeciesToDatabaseAndJson(species);
                 }
             }
         }
 
-        private void SaveSpecies(Species species)
+        private void ParseSpeciesListFromDatabase()
         {
-            SaveToDatabase(species);
-            SaveToJson(species);
+            if (migeContext.Species is null) { return; }
+
+            foreach (var species in migeContext.Species)
+            {
+                FillSpeciesInfo(species);
+                SaveSpeciesToDatabaseAndJson(species);
+            }
         }
 
-        private void SaveToJson(Species species)
+        private void SaveSpeciesToDatabaseAndJson(Species species)
+        {
+            SaveSpeciesToDatabase(species);
+            SaveSpeciesToJson(species);
+        }
+
+        private void SaveSpeciesToJson(Species species)
         {
             string fileName = Path.Combine(DataFolder, SpeciesFolder, $"{species.ID}.json");
             string jsonString = JsonSerializer.Serialize(species);
@@ -121,7 +195,14 @@ namespace mige_collector
             }
         }
 
-        private void SaveToDatabase(Species species)
+        private void SaveSpeciesListToJson()
+        {
+            string fileName = Path.Combine(DataFolder, SpeciesFolder, $"speciesList.json");
+            string jsonString = JsonSerializer.Serialize(Species);
+            File.WriteAllText(fileName, jsonString);
+        }
+
+        private void SaveSpeciesToDatabase(Species species)
         {
             if (migeContext.Species?.Find(species.ID) is null)
             {
@@ -199,9 +280,9 @@ namespace mige_collector
                     actualSpecies.CapText = trimmedText;
                     LastUpdatedProperty = nameof(actualSpecies.CapText);
                 }
-                else if (trimmedText.Contains("Termőtest párna (sztróma):", StringComparison.InvariantCultureIgnoreCase) || 
+                else if (trimmedText.Contains("Termőtest párna (sztróma):", StringComparison.InvariantCultureIgnoreCase) ||
                     trimmedText.Contains("Termőtest:") || trimmedText.Contains("Termőtest-párna (sztróma):") ||
-                    trimmedText.StartsWith("A termőtest") || 
+                    trimmedText.StartsWith("A termőtest") ||
                     trimmedText.Replace(" ", "").Replace("(", "").Replace("-", "").Replace(")", "").Contains("Sztrómatermőtestpárna:"))
                 {
                     if (actualSpecies.StromaText != "") { actualSpecies.StromaText += Environment.NewLine; }
@@ -312,7 +393,7 @@ namespace mige_collector
             }
 
             // Validity check
-            if (actualSpecies.CapText+actualSpecies.StromaText == "")
+            if (actualSpecies.CapText + actualSpecies.StromaText == "")
             {
                 if (actualSpecies.EdibilityShortText.Contains(Environment.NewLine))
                 {
@@ -325,7 +406,7 @@ namespace mige_collector
                 {
                     // There's no valid info for these
                 }
-                else 
+                else
                 {
                     Console.WriteLine("Both CapText and StromaText is missing");
                 }

@@ -1,4 +1,6 @@
-﻿namespace mige_collector
+﻿using System.Text.Json.Serialization;
+
+namespace mige_collector
 {
     public class Species
     {
@@ -10,7 +12,8 @@
         public string OldNameHU { get; set; } = "";
         public string OldNameLatin { get; set; } = "";
 
-        public string FullText { get; set; }
+        [JsonIgnore]
+        public string? FullText { get; set; }
         public string EdibilityShortText { get; set; } = "";
         public string StromaText { get; set; } = "";
         public string GlebaText { get; set; } = "";
